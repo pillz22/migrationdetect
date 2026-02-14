@@ -1,7 +1,7 @@
 import express from 'express';
 
 const app = express();
-const PORT = process.env.PORT || 3000;
+const PORT = process.env.PORT || 8080;
 
 // Axiom cookie - update when expired
 let AXIOM_COOKIE = process.env.AXIOM_COOKIE || '';
@@ -68,4 +68,5 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Axiom Proxy running on port ${PORT}`);
   console.log(`🔑 Cookie: ${AXIOM_COOKIE ? `${AXIOM_COOKIE.length} chars` : 'NOT SET — use AXIOM_COOKIE env var'}`);
+
 });
