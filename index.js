@@ -149,6 +149,60 @@ app.get('/fees/:pool', async (req, res) => {
   }
 });
 
+app.get('/holders/:pool', async (req, res) => {
+  const pool = req.params.pool;
+  if (!pool || pool.length < 30) {
+    return res.json({ error: 'invalid pool' });
+  }
+
+  if (needsRefresh()) {
+    await refreshAccessToken();
+  }
+
+  try {
+    const url = `https://api8.axiom.trade/holder-data-v5?pairAddress=${pool}&v=${Date.now()}`;
+    const response = await fetch(url, {
+      headers: {
+        'cookie': buildCookie(),
+        'referer': 'https://axiom.trade/',
+        'origin': 'https://axiom.trade',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        const refreshed = await refreshAccessToken();
+        if (refreshed) {
+          const res2 = await fetch(url, {
+            headers: {
+              'cookie': buildCookie(),
+              'referer': 'https://axiom.trade/',
+              'origin': 'https://axiom.trade',
+              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'accept': 'application/json'
+            }
+          });
+          if (res2.ok) {
+            const data = await res2.json();
+            console.log(`[${ts()}] ✅ holders ${pool.slice(0, 8)} → ${data.length || 0} holders`);
+            return res.json(data);
+          }
+        }
+      }
+      return res.json({ error: `axiom ${response.status}` });
+    }
+
+    const data = await response.json();
+    console.log(`[${ts()}] ✅ holders ${pool.slice(0, 8)} → ${data.length || 0} holders`);
+    res.json(data);
+  } catch (e) {
+    console.log(`[${ts()}] ❌ holders ${pool.slice(0, 8)} → ${e.message}`);
+    res.json({ error: e.message });
+  }
+});
+
 // Manual cookie/token update
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
