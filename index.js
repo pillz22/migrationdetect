@@ -288,6 +288,64 @@ app.get('/', (req, res) => {
   });
 });
 
+// ═══ Axiom Transactions Feed ═══
+app.get('/transactions/:pool', async (req, res) => {
+  const pool = req.params.pool;
+  if (!pool || pool.length < 30) {
+    return res.json({ error: 'invalid pool' });
+  }
+
+  if (needsRefresh()) {
+    await refreshAccessToken();
+  }
+
+  try {
+    const url = `https://api3.axiom.trade/transactions-feed-v2?pairAddress=${pool}&orderBy=ASC&makerAddress=&v=${Date.now()}`;
+    const response = await fetch(url, {
+      headers: {
+        'cookie': buildCookie(),
+        'referer': 'https://axiom.trade/',
+        'origin': 'https://axiom.trade',
+        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+        'accept': 'application/json'
+      }
+    });
+
+    if (!response.ok) {
+      if (response.status === 401 || response.status === 403) {
+        const refreshed = await refreshAccessToken();
+        if (refreshed) {
+          const res2 = await fetch(url, {
+            headers: {
+              'cookie': buildCookie(),
+              'referer': 'https://axiom.trade/',
+              'origin': 'https://axiom.trade',
+              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+              'accept': 'application/json'
+            }
+          });
+          if (res2.ok) {
+            const data = await res2.json();
+            const buys = Array.isArray(data) ? data.filter(t => t[2] === 'buy').length : 0;
+            console.log(`[${ts()}] ✅ Txs ${pool.slice(0, 8)} → ${buys} buys (retry)`);
+            return res.json(data);
+          }
+        }
+      }
+      console.log(`[${ts()}] ❌ Txs ${pool.slice(0, 8)} → ${response.status}`);
+      return res.json({ error: `axiom ${response.status}` });
+    }
+
+    const data = await response.json();
+    const buys = Array.isArray(data) ? data.filter(t => t[2] === 'buy').length : 0;
+    console.log(`[${ts()}] ✅ Txs ${pool.slice(0, 8)} → ${buys} buys`);
+    res.json(data);
+  } catch (e) {
+    console.log(`[${ts()}] ❌ Txs ${pool.slice(0, 8)} → ${e.message}`);
+    res.json({ error: e.message });
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`🚀 Axiom Proxy running on port ${PORT}`);
   console.log(`🔑 Refresh token: ${refreshToken ? 'SET' : 'NOT SET'}`);
