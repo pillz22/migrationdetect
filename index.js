@@ -182,112 +182,6 @@ app.get('/holders/:pool', async (req, res) => {
   }
 });
 
-// ═══ GMGN Wallet Holdings ═══
-app.get('/gmgn-wallet/:address', async (req, res) => {
-  const address = req.params.address;
-  if (!address || address.length < 30) {
-    return res.json({ error: 'invalid address' });
-  }
-
-  try {
-    const url = `https://gmgn.ai/pf/api/v1/wallet/sol/${address}/holdings?limit=50&order_by=last_active_timestamp&direction=desc&hide_airdrop=true&hide_abnormal=false&hide_closed=false&sellout=true&showsmall=true&tx30d=true`;
-    const response = await fetch(url, {
-      headers: {
-        'accept': 'application/json',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-
-    if (!response.ok) {
-      console.log(`[${ts()}] ❌ GMGN ${address.slice(0, 8)} → ${response.status}`);
-      return res.json({ error: `gmgn ${response.status}` });
-    }
-
-    const data = await response.json();
-    console.log(`[${ts()}] ✅ GMGN ${address.slice(0, 8)} → OK`);
-    res.json(data);
-  } catch (e) {
-    console.log(`[${ts()}] ❌ GMGN ${address.slice(0, 8)} → ${e.message}`);
-    res.json({ error: e.message });
-  }
-});
-
-// ═══ GMGN Batch Wallet Check ═══
-app.post('/gmgn-batch', express.json(), async (req, res) => {
-  const wallets = req.body.wallets || [];
-  if (!wallets.length) return res.json({ error: 'no wallets' });
-
-  const results = {};
-  const batchSize = 5;
-
-  for (let i = 0; i < wallets.length; i += batchSize) {
-    const batch = wallets.slice(i, i + batchSize);
-    const promises = batch.map(async (wallet) => {
-      try {
-        const url = `https://gmgn.ai/pf/api/v1/wallet/sol/${wallet}/holdings?limit=50&order_by=last_active_timestamp&direction=desc&hide_airdrop=true&hide_abnormal=false&hide_closed=false&sellout=true&showsmall=true&tx30d=true`;
-        const response = await fetch(url, {
-          headers: {
-            'accept': 'application/json',
-            'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-          }
-        });
-        if (response.ok) {
-          const data = await response.json();
-          results[wallet] = data;
-        } else {
-          results[wallet] = { error: response.status };
-        }
-      } catch (e) {
-        results[wallet] = { error: e.message };
-      }
-    });
-    await Promise.all(promises);
-  }
-
-  console.log(`[${ts()}] ✅ GMGN batch: ${wallets.length} wallets checked`);
-  res.json(results);
-});
-
-// ═══ Manual Cookie Update ═══
-app.post('/update-cookie', express.json(), (req, res) => {
-  const key = req.headers['x-api-key'] || '';
-  if (key !== (process.env.API_KEY || 'sniper2025')) {
-    return res.status(401).json({ error: 'unauthorized' });
-  }
-
-  if (req.body.refreshToken) {
-    refreshToken = req.body.refreshToken;
-    accessToken = '';
-    lastRefresh = 0;
-    console.log(`[${ts()}] 🔑 Refresh token updated`);
-    res.json({ ok: true });
-  } else if (req.body.cookie) {
-    const rt = req.body.cookie.match(/auth-refresh-token=([^;]+)/);
-    const at = req.body.cookie.match(/auth-access-token=([^;]+)/);
-    const cf = req.body.cookie.match(/__cf_bm=([^;]+)/);
-    if (rt) refreshToken = rt[1];
-    if (at) { accessToken = at[1]; lastRefresh = Date.now(); }
-    if (cf) cfBm = cf[1];
-    console.log(`[${ts()}] 🔑 Cookie updated`);
-    res.json({ ok: true });
-  } else {
-    res.json({ error: 'provide refreshToken or cookie' });
-  }
-});
-
-// ═══ Status ═══
-app.get('/', (req, res) => {
-  res.json({
-    status: 'ok',
-    service: 'axiom-proxy',
-    endpoints: ['/fees/:pool', '/holders/:pool', '/gmgn-wallet/:address', '/gmgn-batch'],
-    hasRefreshToken: refreshToken.length > 0,
-    hasAccessToken: accessToken.length > 0,
-    lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
-    needsRefresh: needsRefresh()
-  });
-});
-
 // ═══ Axiom Transactions Feed ═══
 app.get('/transactions/:pool', async (req, res) => {
   const pool = req.params.pool;
@@ -344,6 +238,46 @@ app.get('/transactions/:pool', async (req, res) => {
     console.log(`[${ts()}] ❌ Txs ${pool.slice(0, 8)} → ${e.message}`);
     res.json({ error: e.message });
   }
+});
+
+// ═══ Manual Cookie Update ═══
+app.post('/update-cookie', express.json(), (req, res) => {
+  const key = req.headers['x-api-key'] || '';
+  if (key !== (process.env.API_KEY || 'sniper2025')) {
+    return res.status(401).json({ error: 'unauthorized' });
+  }
+
+  if (req.body.refreshToken) {
+    refreshToken = req.body.refreshToken;
+    accessToken = '';
+    lastRefresh = 0;
+    console.log(`[${ts()}] 🔑 Refresh token updated`);
+    res.json({ ok: true });
+  } else if (req.body.cookie) {
+    const rt = req.body.cookie.match(/auth-refresh-token=([^;]+)/);
+    const at = req.body.cookie.match(/auth-access-token=([^;]+)/);
+    const cf = req.body.cookie.match(/__cf_bm=([^;]+)/);
+    if (rt) refreshToken = rt[1];
+    if (at) { accessToken = at[1]; lastRefresh = Date.now(); }
+    if (cf) cfBm = cf[1];
+    console.log(`[${ts()}] 🔑 Cookie updated`);
+    res.json({ ok: true });
+  } else {
+    res.json({ error: 'provide refreshToken or cookie' });
+  }
+});
+
+// ═══ Status ═══
+app.get('/', (req, res) => {
+  res.json({
+    status: 'ok',
+    service: 'axiom-proxy',
+    endpoints: ['/fees/:pool', '/holders/:pool', '/transactions/:pool'],
+    hasRefreshToken: refreshToken.length > 0,
+    hasAccessToken: accessToken.length > 0,
+    lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
+    needsRefresh: needsRefresh()
+  });
 });
 
 app.listen(PORT, () => {
