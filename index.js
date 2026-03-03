@@ -15,7 +15,7 @@ async function refreshAccessToken() {
   try {
     console.log(`[${ts()}] 🔄 Refreshing access token...`);
     
-    const res = await fetch('https://api9.axiom.trade/auth/refresh', {
+    const res = await fetch('https://api3.axiom.trade/auth/refresh', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -203,3 +203,4 @@ app.listen(PORT, () => {
     refreshAccessToken();
   }
 });
+
