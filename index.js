@@ -15,7 +15,7 @@ async function refreshAccessToken() {
   try {
     console.log(`[${ts()}] 🔄 Refreshing access token...`);
     
-    const res = await fetch('https://api3.axiom.trade/auth/refresh', {
+    const res = await fetch('https://api9.axiom.trade/auth/refresh', {
       method: 'POST',
       headers: {
         'Content-Type': 'application/json',
@@ -25,6 +25,11 @@ async function refreshAccessToken() {
         'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
       }
     });
+
+    if (res.status === 526) {
+      console.log(`[${ts()}] ⏳ Axiom SSL issue — skipping refresh`);
+      return false;
+    }
 
     const setCookies = res.headers.getSetCookie?.() || [];
     const rawSetCookie = res.headers.get('set-cookie') || '';
@@ -100,7 +105,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
 
   try {
-    const url = `https://api3.axiom.trade/token-info?pairAddress=${pool}&v=${Date.now()}`;
+    const url = `https://api9.axiom.trade/token-info?pairAddress=${pool}&v=${Date.now()}`;
     const response = await fetch(url, {
       headers: {
         'cookie': buildCookie(),
@@ -110,6 +115,11 @@ app.get('/fees/:pool', async (req, res) => {
         'accept': 'application/json'
       }
     });
+
+    if (res.status === 526) {
+      console.log(`[${ts()}] ⏳ Axiom SSL issue on fees`);
+      return res.json({ error: 'ssl_issue', totalPairFeesPaid: 0 });
+    }
 
     if (!response.ok) {
       if (response.status === 401 || response.status === 403 || response.status === 404) {
