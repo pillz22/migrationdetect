@@ -14,7 +14,7 @@ const REFRESH_INTERVAL = 14 * 60 * 1000;
 async function refreshAccessToken() {
   try {
     console.log(`[${ts()}] 🔄 Refreshing access token...`);
-    
+
     const res = await fetch('https://api3.axiom.trade/auth/refresh', {
       method: 'POST',
       headers: {
@@ -33,24 +33,24 @@ async function refreshAccessToken() {
 
     const setCookies = res.headers.getSetCookie?.() || [];
     const rawSetCookie = res.headers.get('set-cookie') || '';
-    
+
     let newAccess = '';
     let newRefresh = '';
     let newCfBm = '';
-    
+
     const allCookies = [...setCookies, ...rawSetCookie.split(',')];
-    
+
     for (const c of allCookies) {
       const accessMatch = c.match(/auth-access-token=([^;]+)/);
       if (accessMatch) newAccess = accessMatch[1];
-      
+
       const refreshMatch = c.match(/auth-refresh-token=([^;]+)/);
       if (refreshMatch) newRefresh = refreshMatch[1];
-      
+
       const cfMatch = c.match(/__cf_bm=([^;]+)/);
       if (cfMatch) newCfBm = cfMatch[1];
     }
-    
+
     try {
       const body = await res.text();
       if (body.includes('access')) {
@@ -60,7 +60,7 @@ async function refreshAccessToken() {
         } catch (e) {}
       }
     } catch (e) {}
-    
+
     if (newAccess) {
       accessToken = newAccess;
       if (newRefresh) refreshToken = newRefresh;
@@ -69,7 +69,7 @@ async function refreshAccessToken() {
       console.log(`[${ts()}] ✅ Access token refreshed`);
       return true;
     }
-    
+
     console.log(`[${ts()}] ⚠️ Refresh failed. Status: ${res.status}`);
     return false;
   } catch (e) {
@@ -155,6 +155,54 @@ app.get('/fees/:pool', async (req, res) => {
   }
 });
 
+// ═══ Axiom Pair Info (real deployer / CTO detection) ═══
+// Returns Axiom's full pair-info JSON. The field that matters for CTO detection is
+// data.extra.pumpDeployerAddress = the ORIGINAL pump.fun deployer (pump.fun's own
+// `creator` gets reassigned on a CTO, so only Axiom keeps the real one).
+app.get('/pair-info/:pair', async (req, res) => {
+  const pair = req.params.pair;
+  if (!pair || pair.length < 30) {
+    return res.json({ error: 'invalid pair' });
+  }
+
+  if (needsRefresh()) {
+    await refreshAccessToken();
+  }
+
+  const url = `https://api9.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
+  const mkHeaders = () => ({
+    'cookie': buildCookie(),
+    'referer': 'https://axiom.trade/',
+    'origin': 'https://axiom.trade',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'accept': 'application/json'
+  });
+
+  try {
+    let response = await fetch(url, { headers: mkHeaders() });
+
+    // same retry-on-auth-failure pattern as /fees
+    if (!response.ok && (response.status === 401 || response.status === 403 || response.status === 404)) {
+      console.log(`[${ts()}] ⚠️ pair-info ${response.status}, retrying with refresh...`);
+      const refreshed = await refreshAccessToken();
+      if (refreshed) response = await fetch(url, { headers: mkHeaders() });
+    }
+
+    if (!response.ok) {
+      console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${response.status}`);
+      return res.json({ error: `axiom ${response.status}` });
+    }
+
+    const data = await response.json();
+    const dep = data?.extra?.pumpDeployerAddress || null;
+    console.log(`[${ts()}] ✅ pair-info ${pair.slice(0, 8)} → deployer ${dep ? dep.slice(0, 8) : 'n/a'}`);
+    res.json(data);
+  } catch (e) {
+    console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${e.message}`);
+    res.json({ error: e.message });
+  }
+});
+
 // ═══ Manual Cookie Update ═══
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
@@ -187,7 +235,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'axiom-fees-proxy',
-    endpoint: '/fees/:pool',
+    endpoints: ['/fees/:pool', '/pair-info/:pair'],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
@@ -198,9 +246,8 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Axiom Fees Proxy running on port ${PORT}`);
   console.log(`🔑 Refresh token: ${refreshToken ? 'SET' : 'NOT SET'}`);
-  
+
   if (refreshToken) {
     refreshAccessToken();
   }
 });
-
