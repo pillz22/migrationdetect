@@ -203,6 +203,54 @@ app.get('/pair-info/:pair', async (req, res) => {
   }
 });
 
+// ═══ Axiom Dev Tokens (COMPLETE cross-platform token list for a creator) ═══
+// pump.fun's user-created-coins API only returns pump.fun tokens — it MISSES tokens a dev
+// launched directly on Raydium / other launchpads. Axiom's dev-tokens-v4 returns ALL of them,
+// so a good creator's real track record (winners, fees, ATH) isn't undercounted.
+app.get('/dev-tokens/:wallet', async (req, res) => {
+  const wallet = req.params.wallet;
+  if (!wallet || wallet.length < 30) {
+    return res.json({ error: 'invalid wallet', tokens: [] });
+  }
+
+  if (needsRefresh()) {
+    await refreshAccessToken();
+  }
+
+  const url = `https://api9.axiom.trade/dev-tokens-v4?devAddress=${wallet}&v=${Date.now()}`;
+  const mkHeaders = () => ({
+    'cookie': buildCookie(),
+    'referer': 'https://axiom.trade/',
+    'origin': 'https://axiom.trade',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'accept': 'application/json'
+  });
+
+  try {
+    let response = await fetch(url, { headers: mkHeaders() });
+
+    // same retry-on-auth-failure pattern as /fees and /pair-info
+    if (!response.ok && (response.status === 401 || response.status === 403 || response.status === 404)) {
+      console.log(`[${ts()}] ⚠️ dev-tokens ${response.status}, retrying with refresh...`);
+      const refreshed = await refreshAccessToken();
+      if (refreshed) response = await fetch(url, { headers: mkHeaders() });
+    }
+
+    if (!response.ok) {
+      console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${response.status}`);
+      return res.json({ error: `axiom ${response.status}`, tokens: [] });
+    }
+
+    const data = await response.json();
+    const arr = Array.isArray(data) ? data : (data.tokens || data.data || []);
+    console.log(`[${ts()}] ✅ dev-tokens ${wallet.slice(0, 8)} → ${arr.length} tokens`);
+    res.json({ tokens: arr });
+  } catch (e) {
+    console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${e.message}`);
+    res.json({ error: e.message, tokens: [] });
+  }
+});
+
 // ═══ Manual Cookie Update ═══
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
@@ -235,7 +283,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'axiom-fees-proxy',
-    endpoints: ['/fees/:pool', '/pair-info/:pair'],
+    endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet'],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
