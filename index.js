@@ -217,7 +217,7 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
     await refreshAccessToken();
   }
 
-  const url = `https://api9.axiom.trade/dev-tokens-v4?devAddress=${wallet}&v=${Date.now()}`;
+  const url = `https://api7.axiom.trade/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`;
   const mkHeaders = () => ({
     'cookie': buildCookie(),
     'referer': 'https://axiom.trade/',
