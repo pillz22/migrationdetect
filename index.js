@@ -105,7 +105,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
 
   try {
-    const url = `https://api6.axiom.trade/token-info?pairAddress=${pool}&v=${Date.now()}`;
+    const url = `https://api10.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
     const response = await fetch(url, {
       headers: {
         'cookie': buildCookie(),
