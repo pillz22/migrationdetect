@@ -8,6 +8,9 @@ let refreshToken = process.env.AXIOM_REFRESH_TOKEN || '';
 let accessToken = '';
 let cfBm = '';
 let lastRefresh = 0;
+// RH (robinhood-api2) cere cf_clearance (IP-bound) → stocăm cookie-ul RH COMPLET,
+// exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
+let rhCookie = '';
 
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
@@ -259,8 +262,9 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 const RH_AX = 'https://robinhood-api2.axiom.trade';
 function rhHeaders() {
+  // Trimite cookie-ul RH COMPLET (cu cf_clearance) dacă e setat; altfel fallback la buildCookie().
   return {
-    'cookie': buildCookie(),
+    'cookie': rhCookie || buildCookie(),
     'referer': 'https://robinhood.axiom.trade/',
     'origin': 'https://robinhood.axiom.trade',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -309,7 +313,19 @@ app.post('/update-cookie', express.json(), (req, res) => {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
-  if (req.body.refreshToken) {
+  if (req.body.rhCookie) {
+    // cookie RH COMPLET (cu cf_clearance) trimis verbatim la robinhood-api2
+    rhCookie = req.body.rhCookie;
+    // extrage și tokenele pt refresh Solana (bonus)
+    const rt = req.body.rhCookie.match(/auth-refresh-token=([^;]+)/);
+    const at = req.body.rhCookie.match(/auth-access-token=([^;]+)/);
+    const cf = req.body.rhCookie.match(/__cf_bm=([^;]+)/);
+    if (rt) refreshToken = rt[1];
+    if (at) { accessToken = at[1]; lastRefresh = Date.now(); }
+    if (cf) cfBm = cf[1];
+    console.log(`[${ts()}] 🔑 RH cookie updated (len ${rhCookie.length})`);
+    res.json({ ok: true, rhCookie: rhCookie.length });
+  } else if (req.body.refreshToken) {
     refreshToken = req.body.refreshToken;
     accessToken = '';
     lastRefresh = 0;
@@ -337,6 +353,7 @@ app.get('/', (req, res) => {
     endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet', '/rh/dev-tokens/:dev', '/rh/ax?path='],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
+    hasRhCookie: rhCookie.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
     needsRefresh: needsRefresh()
   });
