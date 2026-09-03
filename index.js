@@ -108,7 +108,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
 
   try {
-    const url = `https://api10.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
+    const url = `https://api7.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
     const response = await fetch(url, {
       headers: {
         'cookie': buildCookie(),
@@ -172,7 +172,7 @@ app.get('/pair-info/:pair', async (req, res) => {
     await refreshAccessToken();
   }
 
-  const url = `https://api6.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
+  const url = `https://api7.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
   const mkHeaders = () => ({
     'cookie': buildCookie(),
     'referer': 'https://axiom.trade/',
