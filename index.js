@@ -205,7 +205,7 @@ app.get('/pair-info/:pair', async (req, res) => {
 
 // ═══ Axiom Dev Tokens (COMPLETE cross-platform token list for a creator) ═══
 // pump.fun's user-created-coins API only returns pump.fun tokens — it MISSES tokens a dev
-// launched directly on Raydium / other launchpads. Axiom's dev-tokens-v4 returns ALL of them,
+// launched directly on Raydium / other launchpads. Axiom's dev-tokens-v5 returns ALL of them,
 // so a good creator's real track record (winners, fees, ATH) isn't undercounted.
 app.get('/dev-tokens/:wallet', async (req, res) => {
   const wallet = req.params.wallet;
@@ -251,6 +251,57 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════════════
+// ROBINHOOD CHAIN (EVM) — Axiom servește datele RH pe host SEPARAT de Solana:
+//   robinhood-api2.axiom.trade/dev-tokens?devAddress=0x...   (api7 e Solana-only → 500 pe EVM)
+// Auth-ul (refresh/access/__cf_bm) e ACELAȘI cont → refolosim buildCookie().
+// Toate hosturile Axiom sunt geo-gated (404 de pe IP datacenter regiunea VPS) → merge doar de pe Railway.
+// ═══════════════════════════════════════════════════════════════════════════
+const RH_AX = 'https://robinhood-api2.axiom.trade';
+function rhHeaders() {
+  return {
+    'cookie': buildCookie(),
+    'referer': 'https://robinhood.axiom.trade/',
+    'origin': 'https://robinhood.axiom.trade',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'accept': 'application/json'
+  };
+}
+
+// RH dev-tokens — TOATE tokenele lansate de un creator pe Robinhood Chain
+app.get('/rh/dev-tokens/:dev', async (req, res) => {
+  const dev = req.params.dev;
+  if (!dev || !/^0x[0-9a-fA-F]{40}$/.test(dev)) return res.json({ error: 'invalid dev', tokens: [] });
+  if (needsRefresh()) await refreshAccessToken();
+  const url = `${RH_AX}/dev-tokens?devAddress=${dev}&v=${Date.now()}`;
+  try {
+    let r = await fetch(url, { headers: rhHeaders() });
+    if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
+      if (await refreshAccessToken()) r = await fetch(url, { headers: rhHeaders() });
+    }
+    if (!r.ok) { console.log(`[${ts()}] ❌ rh/dev-tokens ${dev.slice(0, 8)} → ${r.status}`); return res.json({ error: `axiom ${r.status}`, tokens: [] }); }
+    const data = await r.json();
+    const arr = Array.isArray(data) ? data : (data.tokens || data.data || []);
+    console.log(`[${ts()}] ✅ rh/dev-tokens ${dev.slice(0, 8)} → ${arr.length}`);
+    res.json({ tokens: arr });
+  } catch (e) { console.log(`[${ts()}] ❌ rh/dev-tokens ${dev.slice(0, 8)} → ${e.message}`); res.json({ error: e.message, tokens: [] }); }
+});
+
+// RH passthrough generic (guarded) — descoperă token-info / fees RH fără alt redeploy.
+//   GET /rh/ax?path=token-info?pairAddress=0x...      header  x-api-key: sniper2025
+app.get('/rh/ax', async (req, res) => {
+  if ((req.headers['x-api-key'] || '') !== (process.env.API_KEY || 'sniper2025')) return res.status(401).json({ error: 'unauthorized' });
+  const path = req.query.path; if (!path) return res.json({ error: 'need ?path=' });
+  if (needsRefresh()) await refreshAccessToken();
+  const url = `${RH_AX}/${String(path).replace(/^\//, '')}`;
+  try {
+    let r = await fetch(url, { headers: rhHeaders() });
+    if (!r.ok && (r.status === 401 || r.status === 403)) { if (await refreshAccessToken()) r = await fetch(url, { headers: rhHeaders() }); }
+    const body = await r.text();
+    res.json({ status: r.status, url, body: body.slice(0, 20000) });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // ═══ Manual Cookie Update ═══
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
@@ -283,7 +334,7 @@ app.get('/', (req, res) => {
   res.json({
     status: 'ok',
     service: 'axiom-fees-proxy',
-    endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet'],
+    endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet', '/rh/dev-tokens/:dev', '/rh/ax?path='],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
