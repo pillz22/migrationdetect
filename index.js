@@ -108,7 +108,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
 
   try {
-    const url = `https://api7.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
+    const url = `https://api10.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
     const response = await fetch(url, {
       headers: {
         'cookie': buildCookie(),
@@ -172,7 +172,7 @@ app.get('/pair-info/:pair', async (req, res) => {
     await refreshAccessToken();
   }
 
-  const url = `https://api7.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
+  const url = `https://api6.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
   const mkHeaders = () => ({
     'cookie': buildCookie(),
     'referer': 'https://axiom.trade/',
@@ -291,6 +291,25 @@ app.get('/rh/dev-tokens/:dev', async (req, res) => {
   } catch (e) { console.log(`[${ts()}] ❌ rh/dev-tokens ${dev.slice(0, 8)} → ${e.message}`); res.json({ error: e.message, tokens: [] }); }
 });
 
+// ═══ GMGN (dev_created_tokens: is_open=migrat + total_fee + token_ath_mc, FIABIL, 1 call) ═══
+// GMGN e Cloudflare-gated ca Axiom → merge doar de pe IP curat (Railway). Cookie opțional (gmgnCookie).
+let gmgnCookie = '';
+function gmgnHeaders() {
+  const h = { 'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0 Safari/537.36', 'accept': 'application/json', 'referer': 'https://gmgn.ai/', 'origin': 'https://gmgn.ai' };
+  if (gmgnCookie) h['cookie'] = gmgnCookie;
+  return h;
+}
+app.get('/gmgn', async (req, res) => {
+  if ((req.headers['x-api-key'] || '') !== (process.env.API_KEY || 'sniper2025')) return res.status(401).json({ error: 'unauthorized' });
+  const path = req.query.path; if (!path) return res.json({ error: 'need ?path=' });
+  const url = `https://gmgn.ai/${String(path).replace(/^\//, '')}`;
+  try {
+    const r = await fetch(url, { headers: gmgnHeaders() });
+    const body = await r.text();
+    res.json({ status: r.status, url, body: body.slice(0, 80000) });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // RH passthrough generic (guarded) — descoperă token-info / fees RH fără alt redeploy.
 //   GET /rh/ax?path=token-info?pairAddress=0x...      header  x-api-key: sniper2025
 app.get('/rh/ax', async (req, res) => {
@@ -313,6 +332,11 @@ app.post('/update-cookie', express.json(), (req, res) => {
     return res.status(401).json({ error: 'unauthorized' });
   }
 
+  if (req.body.gmgnCookie !== undefined) {
+    gmgnCookie = req.body.gmgnCookie || '';
+    console.log(`[${ts()}] 🔑 GMGN cookie updated (len ${gmgnCookie.length})`);
+    return res.json({ ok: true, gmgnCookie: gmgnCookie.length });
+  }
   if (req.body.rhCookie) {
     // cookie RH COMPLET (cu cf_clearance) trimis verbatim la robinhood-api2
     rhCookie = req.body.rhCookie;
