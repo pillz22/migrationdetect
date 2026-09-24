@@ -14,9 +14,11 @@ let rhCookie = '';
 
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
+let _authSticky = 0; // 🎯 sticky: ultimul nod pe care auth/refresh a mers → încercat primul (self-learning, ca la axiomFetch)
 async function refreshAccessToken() {
-  // Rotește subdomeniul și pentru auth/refresh: dacă nodul dă 425/5xx (Axiom LB), încearcă altul înainte să renunțe.
-  const _authNodes = [3, 8, 2, 6, 10];
+  // Rotește subdomeniul și pentru auth/refresh: dacă nodul dă 425/404/5xx (Axiom LB / rută mutată), încearcă altul.
+  const _authBase = [3, 8, 2, 6, 10];
+  const _authNodes = _authSticky ? [_authSticky, ..._authBase.filter(n => n !== _authSticky)] : _authBase;
   for (let ai = 0; ai < _authNodes.length; ai++) {
     try {
       console.log(`[${ts()}] 🔄 Refreshing access token${ai ? ` (api${_authNodes[ai]})` : ''}...`);
@@ -36,8 +38,9 @@ async function refreshAccessToken() {
         console.log(`[${ts()}] ⏳ Axiom SSL issue — skipping refresh`);
         return false;
       }
-      // Nod prost (425/429/5xx) → rotește la următorul; NU renunța (altă cauză ar face refresh-ul să pară mort degeaba).
-      if (res.status === 425 || res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+      // Nod prost (425/429/5xx) SAU ruta /auth/refresh nu-i pe nodul ăsta (404) → rotește la următorul care O ARE;
+      // NU renunța (altfel se oprea la primul 404 și nu mai încerca nodurile bune). Doar 401/403 = refresh-token mort real → stop.
+      if (res.status === 425 || res.status === 429 || res.status === 404 || (res.status >= 500 && res.status <= 599)) {
         console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} → rotate`);
         continue;
       }
@@ -77,6 +80,7 @@ async function refreshAccessToken() {
         if (newRefresh) refreshToken = newRefresh;
         if (newCfBm) cfBm = newCfBm;
         lastRefresh = Date.now();
+        _authSticky = _authNodes[ai];                                  // memorează nodul auth care a mers
         console.log(`[${ts()}] ✅ Access token refreshed${ai ? ` (via api${_authNodes[ai]})` : ''}`);
         return true;
       }
@@ -116,6 +120,10 @@ function ts() {
 const AXIOM_NODES = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
 const MAX_AXIOM_TRIES = 4;
 const _axTransient = s => s === 425 || s === 429 || s === 404 || (s >= 500 && s <= 599);
+// 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
+// încearcă PRIMUL data viitoare → nu re-ghicește la fiecare cerere. Când Axiom mută ruta pe alt nod, prima cerere
+// care rotește găsește noul nod și-l memorează → următoarele merg direct pe el (fără apel irosit, fără update manual).
+const _stickyNode = {}; // key -> ultimul subdomeniu bun
 function axiomHeaders() {
   return {
     'cookie': buildCookie(),
@@ -126,8 +134,10 @@ function axiomHeaders() {
   };
 }
 // Întoarce un Response fetch OK, sau { ok:false, status, _allFailed, _last } dacă toate nodurile încercate au picat.
-async function axiomFetch(pathAndQuery, { preferred, tag }) {
-  const order = [preferred, ...AXIOM_NODES.filter(n => n !== preferred)].slice(0, MAX_AXIOM_TRIES);
+async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
+  const first = _stickyNode[key] || preferred;                        // pornește de la ultimul nod bun (sticky), altfel default
+  const order = [first, ...AXIOM_NODES.filter(n => n !== first)].slice(0, MAX_AXIOM_TRIES);
+  const _ok = (resp, n, rotated) => { if (_stickyNode[key] !== n) { console.log(`[${ts()}] 🎯 ${tag} → api${n} memorat${rotated ? ' (rotit de la api' + first + ')' : ''}`); _stickyNode[key] = n; } return resp; };
   let refreshedOnce = false, last = 'n/a';
   for (let i = 0; i < order.length; i++) {
     const n = order[i];
@@ -135,13 +145,13 @@ async function axiomFetch(pathAndQuery, { preferred, tag }) {
     let response;
     try { response = await fetch(url, { headers: axiomHeaders() }); }
     catch (e) { last = `api${n} ${e.message}`; continue; }             // eroare de rețea → alt nod
-    if (response.ok) { if (i > 0) console.log(`[${ts()}] 🔁 ${tag} via api${n} (rotit, api${preferred} a picat)`); return response; }
+    if (response.ok) return _ok(response, n, i > 0);
     const st = response.status;
     // Auth expirat → refresh O SINGURĂ DATĂ, retry pe ACELAȘI nod (nu-i problemă de nod)
     if ((st === 401 || st === 403) && !refreshedOnce) {
       refreshedOnce = true;
       if (await refreshAccessToken()) {
-        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return r2; last = `api${n} ${r2.status}`; } catch (e) { last = `api${n} ${e.message}`; }
+        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, n, i > 0); last = `api${n} ${r2.status}`; } catch (e) { last = `api${n} ${e.message}`; }
       }
       continue;                                                        // încă prost → rotește
     }
@@ -159,7 +169,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
   if (needsRefresh()) await refreshAccessToken();
   try {
-    const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=${Date.now()}`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}` });
+    const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=${Date.now()}`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}`, key: 'fees' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ ${pool.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, totalPairFeesPaid: 0 });
@@ -185,7 +195,7 @@ app.get('/pair-info/:pair', async (req, res) => {
 
   if (needsRefresh()) await refreshAccessToken();
   try {
-    const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=${Date.now()}`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}` });
+    const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=${Date.now()}`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}`, key: 'pair-info' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}` });
@@ -212,7 +222,7 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
 
   if (needsRefresh()) await refreshAccessToken();
   try {
-    const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}` });
+    const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}`, key: 'dev-tokens' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, tokens: [] });
