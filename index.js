@@ -15,7 +15,14 @@ let rhCookie = '';
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
 let _authSticky = 0; // 🎯 sticky: ultimul nod pe care auth/refresh a mers → încercat primul (self-learning, ca la axiomFetch)
+let _lastRefreshAttempt = 0;
+const REFRESH_COOLDOWN_MS = 30000;
 async function refreshAccessToken() {
+  // ⛔ COOLDOWN: `needsRefresh()` întoarce true la fiecare cerere cât timp accessToken e gol/expirat. Dacă /auth/refresh
+  // e throttled (425), FIECARE cerere ar re-încerca refresh-ul → rotim 5 noduri × N cereri → INUNDĂM /auth/refresh →
+  // Axiom throttle → 425 permanent (loop auto-provocat). Limităm la 1 încercare / 30s. Datele merg oricum cu refresh-token-ul.
+  if (Date.now() - _lastRefreshAttempt < REFRESH_COOLDOWN_MS) return false;
+  _lastRefreshAttempt = Date.now();
   // Rotește subdomeniul și pentru auth/refresh: dacă nodul dă 425/404/5xx (Axiom LB / rută mutată), încearcă altul.
   const _authBase = [3, 8, 2, 6, 10];
   const _authNodes = _authSticky ? [_authSticky, ..._authBase.filter(n => n !== _authSticky)] : _authBase;
@@ -38,10 +45,15 @@ async function refreshAccessToken() {
         console.log(`[${ts()}] ⏳ Axiom SSL issue — skipping refresh`);
         return false;
       }
-      // Nod prost (425/429/5xx) SAU ruta /auth/refresh nu-i pe nodul ăsta (404) → rotește la următorul care O ARE;
-      // NU renunța (altfel se oprea la primul 404 și nu mai încerca nodurile bune). Doar 401/403 = refresh-token mort real → stop.
-      if (res.status === 425 || res.status === 429 || res.status === 404 || (res.status >= 500 && res.status <= 599)) {
-        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} → rotate`);
+      // ⛔ 425/429 „Too Early" = rate-limit GLOBAL al refresh-ului (toate nodurile refuză la fel, NU-i problemă de nod).
+      // Rotația ar trimite și mai multe apeluri → și mai mult throttle. OPRIM și așteptăm cooldown-ul (datele merg oricum).
+      if (res.status === 425 || res.status === 429) {
+        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} (too early / rate-limit) → opresc, aștept cooldown`);
+        break;
+      }
+      // 404 (ruta nu-i pe nod) sau 5xx (eroare de server) = problemă de NOD → rotește la altul care O ARE.
+      if (res.status === 404 || (res.status >= 500 && res.status <= 599)) {
+        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} → rotate (rută/nod)`);
         continue;
       }
 
