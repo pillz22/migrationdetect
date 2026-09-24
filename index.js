@@ -132,7 +132,6 @@ function ts() {
 // DOAR subdomeniile care REZOLVĂ DNS (api4/api5/api11 NU există → „fetch failed" degeaba). Verificat 2026-09-25.
 const AXIOM_NODES = [2, 3, 6, 7, 8, 9, 10];
 const MAX_AXIOM_TRIES = 4;
-const _axTransient = s => s === 425 || s === 429 || s === 404 || (s >= 500 && s <= 599);
 // 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
 // încearcă PRIMUL data viitoare → nu re-ghicește la fiecare cerere. Când Axiom mută ruta pe alt nod, prima cerere
 // care rotește găsește noul nod și-l memorează → următoarele merg direct pe el (fără apel irosit, fără update manual).
@@ -169,7 +168,10 @@ async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
       continue;                                                        // încă prost → rotește
     }
     tries.push(`api${n}:${st}`);
-    if (_axTransient(st)) continue;                                    // 425/429/404/5xx = nod prost → rotește
+    // ⛔ 425/429 „Too Early" = rate-limit pe CONT/IP (toate nodurile te throttle-uiesc DEODATĂ, nu-i nod prost).
+    // Rotația ar trimite 4 apeluri/cerere → și mai mult rate-limit. IES imediat (fail-fast, 1 apel) → caller-ul reîncearcă mai târziu.
+    if (st === 425 || st === 429) break;
+    if (st === 404 || (st >= 500 && st <= 599)) continue;              // rută mutată / eroare server = problemă de NOD → rotește
     return response;                                                   // alt cod (ex 400) → întoarce cum e
   }
   return { ok: false, status: 425, _allFailed: true, _last: tries.join(',') };
