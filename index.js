@@ -15,70 +15,81 @@ let rhCookie = '';
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
 async function refreshAccessToken() {
-  try {
-    console.log(`[${ts()}] 🔄 Refreshing access token...`);
-
-    const res = await fetch('https://api3.axiom.trade/auth/refresh', {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'cookie': `auth-refresh-token=${refreshToken}`,
-        'referer': 'https://axiom.trade/',
-        'origin': 'https://axiom.trade',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-      }
-    });
-
-    if (res.status === 526) {
-      console.log(`[${ts()}] ⏳ Axiom SSL issue — skipping refresh`);
-      return false;
-    }
-
-    const setCookies = res.headers.getSetCookie?.() || [];
-    const rawSetCookie = res.headers.get('set-cookie') || '';
-
-    let newAccess = '';
-    let newRefresh = '';
-    let newCfBm = '';
-
-    const allCookies = [...setCookies, ...rawSetCookie.split(',')];
-
-    for (const c of allCookies) {
-      const accessMatch = c.match(/auth-access-token=([^;]+)/);
-      if (accessMatch) newAccess = accessMatch[1];
-
-      const refreshMatch = c.match(/auth-refresh-token=([^;]+)/);
-      if (refreshMatch) newRefresh = refreshMatch[1];
-
-      const cfMatch = c.match(/__cf_bm=([^;]+)/);
-      if (cfMatch) newCfBm = cfMatch[1];
-    }
-
+  // Rotește subdomeniul și pentru auth/refresh: dacă nodul dă 425/5xx (Axiom LB), încearcă altul înainte să renunțe.
+  const _authNodes = [3, 8, 2, 6, 10];
+  for (let ai = 0; ai < _authNodes.length; ai++) {
     try {
-      const body = await res.text();
-      if (body.includes('access')) {
-        try {
-          const data = JSON.parse(body);
-          if (data.accessToken) newAccess = data.accessToken;
-        } catch (e) {}
+      console.log(`[${ts()}] 🔄 Refreshing access token${ai ? ` (api${_authNodes[ai]})` : ''}...`);
+
+      const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/auth/refresh`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'cookie': `auth-refresh-token=${refreshToken}`,
+          'referer': 'https://axiom.trade/',
+          'origin': 'https://axiom.trade',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        }
+      });
+
+      if (res.status === 526) {
+        console.log(`[${ts()}] ⏳ Axiom SSL issue — skipping refresh`);
+        return false;
       }
-    } catch (e) {}
+      // Nod prost (425/429/5xx) → rotește la următorul; NU renunța (altă cauză ar face refresh-ul să pară mort degeaba).
+      if (res.status === 425 || res.status === 429 || (res.status >= 500 && res.status <= 599)) {
+        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} → rotate`);
+        continue;
+      }
 
-    if (newAccess) {
-      accessToken = newAccess;
-      if (newRefresh) refreshToken = newRefresh;
-      if (newCfBm) cfBm = newCfBm;
-      lastRefresh = Date.now();
-      console.log(`[${ts()}] ✅ Access token refreshed`);
-      return true;
+      const setCookies = res.headers.getSetCookie?.() || [];
+      const rawSetCookie = res.headers.get('set-cookie') || '';
+
+      let newAccess = '';
+      let newRefresh = '';
+      let newCfBm = '';
+
+      const allCookies = [...setCookies, ...rawSetCookie.split(',')];
+
+      for (const c of allCookies) {
+        const accessMatch = c.match(/auth-access-token=([^;]+)/);
+        if (accessMatch) newAccess = accessMatch[1];
+
+        const refreshMatch = c.match(/auth-refresh-token=([^;]+)/);
+        if (refreshMatch) newRefresh = refreshMatch[1];
+
+        const cfMatch = c.match(/__cf_bm=([^;]+)/);
+        if (cfMatch) newCfBm = cfMatch[1];
+      }
+
+      try {
+        const body = await res.text();
+        if (body.includes('access')) {
+          try {
+            const data = JSON.parse(body);
+            if (data.accessToken) newAccess = data.accessToken;
+          } catch (e) {}
+        }
+      } catch (e) {}
+
+      if (newAccess) {
+        accessToken = newAccess;
+        if (newRefresh) refreshToken = newRefresh;
+        if (newCfBm) cfBm = newCfBm;
+        lastRefresh = Date.now();
+        console.log(`[${ts()}] ✅ Access token refreshed${ai ? ` (via api${_authNodes[ai]})` : ''}`);
+        return true;
+      }
+
+      // Fără access + non-tranzitoriu (ex 401 = refresh-token mort) → n-are rost să rotim, oprim.
+      console.log(`[${ts()}] ⚠️ Refresh failed. Status: ${res.status}`);
+      return false;
+    } catch (e) {
+      console.log(`[${ts()}] ❌ Refresh error api${_authNodes[ai]}: ${e.message} → rotate`);
+      continue;
     }
-
-    console.log(`[${ts()}] ⚠️ Refresh failed. Status: ${res.status}`);
-    return false;
-  } catch (e) {
-    console.log(`[${ts()}] ❌ Refresh error: ${e.message}`);
-    return false;
   }
+  return false;
 }
 
 function buildCookie() {
@@ -97,58 +108,62 @@ function ts() {
 }
 
 // ═══ Axiom Fees ═══
+// ═══ Axiom subdomain rotation ═══
+// Axiom load-balancează pe api2..api11 — un nod dă uneori 425 „Too Early"/5xx (sau 404 dacă ruta nu-i pe nodul ăla)
+// în timp ce alt nod merge (observat: pair-info pe api2 pică, pe api3 merge). Codul vechi hardcoda UN subdomeniu și
+// la eșec doar reîmprospăta token-ul pe ACELAȘI nod → 425 rămânea. Acum rotim la alt api-N pe eșec tranzitoriu.
+// Plafonat la MAX_AXIOM_TRIES ca să NU bursteze Axiom (max N apeluri/cerere, doar pe eșec — cazul normal = 1 apel).
+const AXIOM_NODES = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+const MAX_AXIOM_TRIES = 4;
+const _axTransient = s => s === 425 || s === 429 || s === 404 || (s >= 500 && s <= 599);
+function axiomHeaders() {
+  return {
+    'cookie': buildCookie(),
+    'referer': 'https://axiom.trade/',
+    'origin': 'https://axiom.trade',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'accept': 'application/json'
+  };
+}
+// Întoarce un Response fetch OK, sau { ok:false, status, _allFailed, _last } dacă toate nodurile încercate au picat.
+async function axiomFetch(pathAndQuery, { preferred, tag }) {
+  const order = [preferred, ...AXIOM_NODES.filter(n => n !== preferred)].slice(0, MAX_AXIOM_TRIES);
+  let refreshedOnce = false, last = 'n/a';
+  for (let i = 0; i < order.length; i++) {
+    const n = order[i];
+    const url = `https://api${n}.axiom.trade${pathAndQuery}`;
+    let response;
+    try { response = await fetch(url, { headers: axiomHeaders() }); }
+    catch (e) { last = `api${n} ${e.message}`; continue; }             // eroare de rețea → alt nod
+    if (response.ok) { if (i > 0) console.log(`[${ts()}] 🔁 ${tag} via api${n} (rotit, api${preferred} a picat)`); return response; }
+    const st = response.status;
+    // Auth expirat → refresh O SINGURĂ DATĂ, retry pe ACELAȘI nod (nu-i problemă de nod)
+    if ((st === 401 || st === 403) && !refreshedOnce) {
+      refreshedOnce = true;
+      if (await refreshAccessToken()) {
+        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return r2; last = `api${n} ${r2.status}`; } catch (e) { last = `api${n} ${e.message}`; }
+      }
+      continue;                                                        // încă prost → rotește
+    }
+    last = `api${n} ${st}`;
+    if (_axTransient(st)) continue;                                    // 425/429/404/5xx = nod prost → rotește
+    return response;                                                   // alt cod (ex 400) → întoarce cum e
+  }
+  return { ok: false, status: 425, _allFailed: true, _last: last };
+}
+
 app.get('/fees/:pool', async (req, res) => {
   const pool = req.params.pool;
   if (!pool || pool.length < 30) {
     return res.json({ error: 'invalid pool', totalPairFeesPaid: 0 });
   }
-
-  if (needsRefresh()) {
-    await refreshAccessToken();
-  }
-
+  if (needsRefresh()) await refreshAccessToken();
   try {
-    const url = `https://api10.axiom.trade/token-info-v2?pairAddress=${pool}&v=${Date.now()}`;
-    const response = await fetch(url, {
-      headers: {
-        'cookie': buildCookie(),
-        'referer': 'https://axiom.trade/',
-        'origin': 'https://axiom.trade',
-        'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-        'accept': 'application/json'
-      }
-    });
-
-    if (res.status === 526) {
-      console.log(`[${ts()}] ⏳ Axiom SSL issue on fees`);
-      return res.json({ error: 'ssl_issue', totalPairFeesPaid: 0 });
-    }
-
+    const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=${Date.now()}`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}` });
     if (!response.ok) {
-      if (response.status === 401 || response.status === 403 || response.status === 404) {
-        console.log(`[${ts()}] ⚠️ Axiom ${response.status}, retrying with refresh...`);
-        const refreshed = await refreshAccessToken();
-        if (refreshed) {
-          const res2 = await fetch(url, {
-            headers: {
-              'cookie': buildCookie(),
-              'referer': 'https://axiom.trade/',
-              'origin': 'https://axiom.trade',
-              'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-              'accept': 'application/json'
-            }
-          });
-          if (res2.ok) {
-            const data = await res2.json();
-            console.log(`[${ts()}] ✅ ${pool.slice(0, 8)} → fees: ${data.totalPairFeesPaid || 0} (retry)`);
-            return res.json(data);
-          }
-        }
-      }
-      console.log(`[${ts()}] ❌ ${pool.slice(0, 8)} → ${response.status}`);
-      return res.json({ error: `axiom ${response.status}`, totalPairFeesPaid: 0 });
+      console.log(`[${ts()}] ❌ ${pool.slice(0, 8)} → ${response._last || response.status}`);
+      return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, totalPairFeesPaid: 0 });
     }
-
     const data = await response.json();
     console.log(`[${ts()}] ✅ ${pool.slice(0, 8)} → fees: ${data.totalPairFeesPaid || 0}`);
     res.json(data);
@@ -168,34 +183,13 @@ app.get('/pair-info/:pair', async (req, res) => {
     return res.json({ error: 'invalid pair' });
   }
 
-  if (needsRefresh()) {
-    await refreshAccessToken();
-  }
-
-  const url = `https://api6.axiom.trade/pair-info?pairAddress=${pair}&v=${Date.now()}`;
-  const mkHeaders = () => ({
-    'cookie': buildCookie(),
-    'referer': 'https://axiom.trade/',
-    'origin': 'https://axiom.trade',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'accept': 'application/json'
-  });
-
+  if (needsRefresh()) await refreshAccessToken();
   try {
-    let response = await fetch(url, { headers: mkHeaders() });
-
-    // same retry-on-auth-failure pattern as /fees
-    if (!response.ok && (response.status === 401 || response.status === 403 || response.status === 404)) {
-      console.log(`[${ts()}] ⚠️ pair-info ${response.status}, retrying with refresh...`);
-      const refreshed = await refreshAccessToken();
-      if (refreshed) response = await fetch(url, { headers: mkHeaders() });
-    }
-
+    const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=${Date.now()}`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}` });
     if (!response.ok) {
-      console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${response.status}`);
-      return res.json({ error: `axiom ${response.status}` });
+      console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${response._last || response.status}`);
+      return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}` });
     }
-
     const data = await response.json();
     const dep = data?.extra?.pumpDeployerAddress || null;
     console.log(`[${ts()}] ✅ pair-info ${pair.slice(0, 8)} → deployer ${dep ? dep.slice(0, 8) : 'n/a'}`);
@@ -216,34 +210,13 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
     return res.json({ error: 'invalid wallet', tokens: [] });
   }
 
-  if (needsRefresh()) {
-    await refreshAccessToken();
-  }
-
-  const url = `https://api7.axiom.trade/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`;
-  const mkHeaders = () => ({
-    'cookie': buildCookie(),
-    'referer': 'https://axiom.trade/',
-    'origin': 'https://axiom.trade',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'accept': 'application/json'
-  });
-
+  if (needsRefresh()) await refreshAccessToken();
   try {
-    let response = await fetch(url, { headers: mkHeaders() });
-
-    // same retry-on-auth-failure pattern as /fees and /pair-info
-    if (!response.ok && (response.status === 401 || response.status === 403 || response.status === 404)) {
-      console.log(`[${ts()}] ⚠️ dev-tokens ${response.status}, retrying with refresh...`);
-      const refreshed = await refreshAccessToken();
-      if (refreshed) response = await fetch(url, { headers: mkHeaders() });
-    }
-
+    const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}` });
     if (!response.ok) {
-      console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${response.status}`);
-      return res.json({ error: `axiom ${response.status}`, tokens: [] });
+      console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${response._last || response.status}`);
+      return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, tokens: [] });
     }
-
     const data = await response.json();
     const arr = Array.isArray(data) ? data : (data.tokens || data.data || []);
     console.log(`[${ts()}] ✅ dev-tokens ${wallet.slice(0, 8)} → ${arr.length} tokens`);
