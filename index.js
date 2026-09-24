@@ -16,7 +16,7 @@ const REFRESH_INTERVAL = 14 * 60 * 1000;
 
 let _authSticky = 0; // 🎯 sticky: ultimul nod pe care auth/refresh a mers → încercat primul (self-learning, ca la axiomFetch)
 let _lastRefreshAttempt = 0;
-const REFRESH_COOLDOWN_MS = 30000;
+const REFRESH_COOLDOWN_MS = 60000; // 60s — refresh cel mult 1×/min, ca să NU inundăm /auth/refresh (risc de ban/throttle)
 async function refreshAccessToken() {
   // ⛔ COOLDOWN: `needsRefresh()` întoarce true la fiecare cerere cât timp accessToken e gol/expirat. Dacă /auth/refresh
   // e throttled (425), FIECARE cerere ar re-încerca refresh-ul → rotim 5 noduri × N cereri → INUNDĂM /auth/refresh →
@@ -179,7 +179,7 @@ app.get('/fees/:pool', async (req, res) => {
   if (!pool || pool.length < 30) {
     return res.json({ error: 'invalid pool', totalPairFeesPaid: 0 });
   }
-  if (needsRefresh()) await refreshAccessToken();
+  // 🛡️ Refresh DOAR reactiv (axiomFetch reînnoiește pe 401/403 real) — NU proactiv la fiecare cerere → zero storm pe /auth/refresh.
   try {
     const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=${Date.now()}`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}`, key: 'fees' });
     if (!response.ok) {
@@ -205,7 +205,7 @@ app.get('/pair-info/:pair', async (req, res) => {
     return res.json({ error: 'invalid pair' });
   }
 
-  if (needsRefresh()) await refreshAccessToken();
+  // 🛡️ Refresh DOAR reactiv (pe 401/403) — nu proactiv.
   try {
     const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=${Date.now()}`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}`, key: 'pair-info' });
     if (!response.ok) {
@@ -232,7 +232,7 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
     return res.json({ error: 'invalid wallet', tokens: [] });
   }
 
-  if (needsRefresh()) await refreshAccessToken();
+  // 🛡️ Refresh DOAR reactiv (pe 401/403) — nu proactiv.
   try {
     const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}`, key: 'dev-tokens' });
     if (!response.ok) {
@@ -271,7 +271,6 @@ function rhHeaders() {
 app.get('/rh/dev-tokens/:dev', async (req, res) => {
   const dev = req.params.dev;
   if (!dev || !/^0x[0-9a-fA-F]{40}$/.test(dev)) return res.json({ error: 'invalid dev', tokens: [] });
-  if (needsRefresh()) await refreshAccessToken();
   const url = `${RH_AX}/dev-tokens?devAddress=${dev}&v=${Date.now()}`;
   try {
     let r = await fetch(url, { headers: rhHeaders() });
@@ -310,7 +309,6 @@ app.get('/gmgn', async (req, res) => {
 app.get('/rh/ax', async (req, res) => {
   if ((req.headers['x-api-key'] || '') !== (process.env.API_KEY || 'sniper2025')) return res.status(401).json({ error: 'unauthorized' });
   const path = req.query.path; if (!path) return res.json({ error: 'need ?path=' });
-  if (needsRefresh()) await refreshAccessToken();
   const url = `${RH_AX}/${String(path).replace(/^\//, '')}`;
   try {
     let r = await fetch(url, { headers: rhHeaders() });
