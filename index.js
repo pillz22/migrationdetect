@@ -129,7 +129,8 @@ function ts() {
 // în timp ce alt nod merge (observat: pair-info pe api2 pică, pe api3 merge). Codul vechi hardcoda UN subdomeniu și
 // la eșec doar reîmprospăta token-ul pe ACELAȘI nod → 425 rămânea. Acum rotim la alt api-N pe eșec tranzitoriu.
 // Plafonat la MAX_AXIOM_TRIES ca să NU bursteze Axiom (max N apeluri/cerere, doar pe eșec — cazul normal = 1 apel).
-const AXIOM_NODES = [2, 3, 4, 5, 6, 7, 8, 9, 10, 11];
+// DOAR subdomeniile care REZOLVĂ DNS (api4/api5/api11 NU există → „fetch failed" degeaba). Verificat 2026-09-25.
+const AXIOM_NODES = [2, 3, 6, 7, 8, 9, 10];
 const MAX_AXIOM_TRIES = 4;
 const _axTransient = s => s === 425 || s === 429 || s === 404 || (s >= 500 && s <= 599);
 // 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
@@ -150,28 +151,28 @@ async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
   const first = _stickyNode[key] || preferred;                        // pornește de la ultimul nod bun (sticky), altfel default
   const order = [first, ...AXIOM_NODES.filter(n => n !== first)].slice(0, MAX_AXIOM_TRIES);
   const _ok = (resp, n, rotated) => { if (_stickyNode[key] !== n) { console.log(`[${ts()}] 🎯 ${tag} → api${n} memorat${rotated ? ' (rotit de la api' + first + ')' : ''}`); _stickyNode[key] = n; } return resp; };
-  let refreshedOnce = false, last = 'n/a';
+  let refreshedOnce = false; const tries = [];
   for (let i = 0; i < order.length; i++) {
     const n = order[i];
     const url = `https://api${n}.axiom.trade${pathAndQuery}`;
     let response;
     try { response = await fetch(url, { headers: axiomHeaders() }); }
-    catch (e) { last = `api${n} ${e.message}`; continue; }             // eroare de rețea → alt nod
+    catch (e) { tries.push(`api${n}:${e.message}`); continue; }        // eroare de rețea → alt nod
     if (response.ok) return _ok(response, n, i > 0);
     const st = response.status;
     // Auth expirat → refresh O SINGURĂ DATĂ, retry pe ACELAȘI nod (nu-i problemă de nod)
     if ((st === 401 || st === 403) && !refreshedOnce) {
       refreshedOnce = true;
       if (await refreshAccessToken()) {
-        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, n, i > 0); last = `api${n} ${r2.status}`; } catch (e) { last = `api${n} ${e.message}`; }
+        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, n, i > 0); tries.push(`api${n}:${r2.status}`); } catch (e) { tries.push(`api${n}:${e.message}`); }
       }
       continue;                                                        // încă prost → rotește
     }
-    last = `api${n} ${st}`;
+    tries.push(`api${n}:${st}`);
     if (_axTransient(st)) continue;                                    // 425/429/404/5xx = nod prost → rotește
     return response;                                                   // alt cod (ex 400) → întoarce cum e
   }
-  return { ok: false, status: 425, _allFailed: true, _last: last };
+  return { ok: false, status: 425, _allFailed: true, _last: tries.join(',') };
 }
 
 app.get('/fees/:pool', async (req, res) => {
