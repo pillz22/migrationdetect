@@ -24,13 +24,17 @@ async function refreshAccessToken() {
   if (Date.now() - _lastRefreshAttempt < REFRESH_COOLDOWN_MS) return false;
   _lastRefreshAttempt = Date.now();
   // Rotește subdomeniul și pentru auth/refresh: dacă nodul dă 425/404/5xx (Axiom LB / rută mutată), încearcă altul.
-  const _authBase = [3, 8, 2, 6, 10];
+  // Nodurile pe care browserul face refresh cu succes (măsurat 2026-10-10 din pagina Axiom: api, api2/3/7/8/9/10 → 200)
+  const _authBase = [9, 3, 8, 10, 7, 2];
   const _authNodes = _authSticky ? [_authSticky, ..._authBase.filter(n => n !== _authSticky)] : _authBase;
   for (let ai = 0; ai < _authNodes.length; ai++) {
     try {
       console.log(`[${ts()}] 🔄 Refreshing access token${ai ? ` (api${_authNodes[ai]})` : ''}...`);
 
-      const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/auth/refresh`, {
+      // ⚠️ Ruta s-a MUTAT: `/auth/refresh` nu mai există (404 pe toate nodurile) → proxy-ul n-avea NICIODATĂ token de acces
+      // (`/` arăta hasAccessToken:false, lastRefresh:never) și trimitea doar refresh-token-ul. Browserul folosește
+      // POST /refresh-access-token → răspunde „Access token refreshed!" + Set-Cookie auth-access-token.
+      const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/refresh-access-token`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -166,6 +170,14 @@ async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
         try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, n, i > 0); tries.push(`api${n}:${r2.status}`); } catch (e) { tries.push(`api${n}:${e.message}`); }
       }
       continue;                                                        // încă prost → rotește
+    }
+    // 425 fără token de acces proaspăt → probabil Axiom vrea întâi refresh (browserul are mereu token valid și nu ia 425)
+    if (st === 425 && !refreshedOnce && needsRefresh()) {
+      refreshedOnce = true;
+      if (await refreshAccessToken()) {
+        try { const r2 = await fetch(url, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, n, i > 0); tries.push(`api${n}:${r2.status}(după refresh)`); } catch (e) { tries.push(`api${n}:${e.message}`); }
+        break;
+      }
     }
     tries.push(`api${n}:${st}`);
     // ⛔ 425/429 „Too Early" = rate-limit pe CONT/IP (toate nodurile te throttle-uiesc DEODATĂ, nu-i nod prost).
@@ -386,4 +398,7 @@ app.listen(PORT, () => {
   if (refreshToken) {
     refreshAccessToken();
   }
+  // 🔄 Refresh PROACTIV la 12 min (token-ul de acces expiră ~16 min), ca browserul → fiecare cerere pleacă cu token valid.
+  // ~5 apeluri/oră; cooldown-ul de 60s din refreshAccessToken rămâne.
+  setInterval(() => { if (refreshToken && Date.now() - lastRefresh > 12 * 60 * 1000) refreshAccessToken(); }, 60 * 1000);
 });
