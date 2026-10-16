@@ -42,7 +42,10 @@ async function refreshAccessToken() {
           'referer': 'https://axiom.trade/',
           'origin': 'https://axiom.trade',
           'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        }
+        },
+        // 🔑 2026-10-16: Axiom folosește acum `v` ca VERSIUNE de API — browserul trimite corp {"v":2} la refresh și `&v=2` pe
+        // dev-tokens-v5 / token-info-v2 / pair-info. Fără corp / cu v=<timestamp> → 404 „RESOURCE NOT FOUND" pe toate nodurile.
+        body: JSON.stringify({ v: 2 })
       });
 
       if (res.status === 526) {
@@ -196,7 +199,7 @@ app.get('/fees/:pool', async (req, res) => {
   }
   // 🛡️ Refresh DOAR reactiv (axiomFetch reînnoiește pe 401/403 real) — NU proactiv la fiecare cerere → zero storm pe /auth/refresh.
   try {
-    const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=${Date.now()}`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}`, key: 'fees' });
+    const response = await axiomFetch(`/token-info-v2?pairAddress=${pool}&v=2`, { preferred: 10, tag: `fees ${pool.slice(0, 8)}`, key: 'fees' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ ${pool.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, totalPairFeesPaid: 0 });
@@ -222,7 +225,7 @@ app.get('/pair-info/:pair', async (req, res) => {
 
   // 🛡️ Refresh DOAR reactiv (pe 401/403) — nu proactiv.
   try {
-    const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=${Date.now()}`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}`, key: 'pair-info' });
+    const response = await axiomFetch(`/pair-info?pairAddress=${pair}&v=2`, { preferred: 6, tag: `pair-info ${pair.slice(0, 8)}`, key: 'pair-info' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ pair-info ${pair.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}` });
@@ -249,7 +252,7 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
 
   // 🛡️ Refresh DOAR reactiv (pe 401/403) — nu proactiv.
   try {
-    const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=${Date.now()}`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}`, key: 'dev-tokens' });
+    const response = await axiomFetch(`/dev-tokens-v5?devAddress=${wallet}&v=2`, { preferred: 7, tag: `dev-tokens ${wallet.slice(0, 8)}`, key: 'dev-tokens' });
     if (!response.ok) {
       console.log(`[${ts()}] ❌ dev-tokens ${wallet.slice(0, 8)} → ${response._last || response.status}`);
       return res.json({ error: `axiom ${response._allFailed ? (response._last || 'all-nodes') : response.status}`, tokens: [] });
@@ -286,7 +289,7 @@ function rhHeaders() {
 app.get('/rh/dev-tokens/:dev', async (req, res) => {
   const dev = req.params.dev;
   if (!dev || !/^0x[0-9a-fA-F]{40}$/.test(dev)) return res.json({ error: 'invalid dev', tokens: [] });
-  const url = `${RH_AX}/dev-tokens?devAddress=${dev}&v=${Date.now()}`;
+  const url = `${RH_AX}/dev-tokens?devAddress=${dev}&v=2`;
   try {
     let r = await fetch(url, { headers: rhHeaders() });
     if (!r.ok && (r.status === 401 || r.status === 403 || r.status === 404)) {
