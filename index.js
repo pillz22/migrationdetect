@@ -11,6 +11,7 @@ let lastRefresh = 0;
 // RH (robinhood-api2) cere cf_clearance (IP-bound) → stocăm cookie-ul RH COMPLET,
 // exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
 let rhCookie = '';
+let cfClearance = process.env.CF_CLEARANCE || '';
 
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
@@ -275,9 +276,17 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 const RH_AX = 'https://robinhood-api2.axiom.trade';
 function rhHeaders() {
-  // Trimite cookie-ul RH COMPLET (cu cf_clearance) dacă e setat; altfel fallback la buildCookie().
+  let cookie = rhCookie || buildCookie();
+
+  // Adaugă CF_CLEARANCE doar dacă nu există deja în cookie.
+  const hasClearanceInCookie = /(?:^|;\s*)cf_clearance=/i.test(cookie);
+
+  if (cfClearance && !hasClearanceInCookie) {
+    cookie = `${cookie}; cf_clearance=${cfClearance}`;
+  }
+
   return {
-    'cookie': rhCookie || buildCookie(),
+    'cookie': cookie,
     'referer': 'https://robinhood.axiom.trade/',
     'origin': 'https://robinhood.axiom.trade',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -388,7 +397,7 @@ app.get('/', (req, res) => {
     endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet', '/rh/dev-tokens/:dev', '/rh/ax?path='],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
-    hasRhCookie: rhCookie.length > 0,
+hasCfClearance: cfClearance.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
     needsRefresh: needsRefresh()
   });
