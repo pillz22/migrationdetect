@@ -12,6 +12,32 @@ let lastRefresh = 0;
 // exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
 let rhCookie = '';
 let cfClearance = process.env.CF_CLEARANCE || '';
+// 🖥️ PROFILUL BROWSERULUI din care sunt cookie-urile (2026-10-18): cf_clearance e legat de User-Agent-ul browserului care l-a primit, iar
+// browserul trimite și sec-ch-ua / sec-fetch-*. Proxy-ul trimitea un UA de Windows scurtat și nimic altceva → Axiom răspundea
+// „404 RESOURCE NOT FOUND" la tot, deși tokenul era valid. Acum: UA + sec-ch-* trimise prin /update-cookie (sau env), salvate pe disc.
+let br = {
+  ua: process.env.AXIOM_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
+  chua: process.env.AXIOM_SEC_CH_UA || '"Chromium";v="141", "Not?A_Brand";v="24", "Google Chrome";v="141"',
+  platform: process.env.AXIOM_PLATFORM || '"Windows"',
+  mobile: process.env.AXIOM_MOBILE || '?0',
+};
+function browserHeaders(extra = {}) {
+  return {
+    'accept': 'application/json, text/plain, */*',
+    'accept-language': 'en-US,en;q=0.9',
+    'origin': 'https://axiom.trade',
+    'referer': 'https://axiom.trade/',
+    'priority': 'u=1, i',
+    'sec-ch-ua': br.chua,
+    'sec-ch-ua-mobile': br.mobile,
+    'sec-ch-ua-platform': br.platform,
+    'sec-fetch-dest': 'empty',
+    'sec-fetch-mode': 'cors',
+    'sec-fetch-site': 'same-site',
+    'user-agent': br.ua,
+    ...extra,
+  };
+}
 
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
@@ -37,13 +63,10 @@ async function refreshAccessToken() {
       // POST /refresh-access-token → răspunde „Access token refreshed!" + Set-Cookie auth-access-token.
       const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/refresh-access-token`, {
         method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'cookie': `auth-refresh-token=${refreshToken}` + (cfClearance ? `; cf_clearance=${cfClearance}` : ''),
-          'referer': 'https://axiom.trade/',
-          'origin': 'https://axiom.trade',
-          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-        },
+        headers: browserHeaders({
+          'content-type': 'application/json',
+          'cookie': `auth-refresh-token=${refreshToken}` + (cfBm ? `; __cf_bm=${cfBm}` : '') + (cfClearance ? `; cf_clearance=${cfClearance}` : ''),
+        }),
         // 🔑 2026-10-16: Axiom folosește acum `v` ca VERSIUNE de API — browserul trimite corp {"v":2} la refresh și `&v=2` pe
         // dev-tokens-v5 / token-info-v2 / pair-info. Fără corp / cu v=<timestamp> → 404 „RESOURCE NOT FOUND" pe toate nodurile.
         body: JSON.stringify({ v: 2 })
@@ -131,7 +154,7 @@ import { dirname } from 'path';
 const AUTH_FILE = process.env.AUTH_FILE || '/data/axiom-auth.json';
 const AUTH_FALLBACK = './axiom-auth.json';
 function saveAuth() {
-  const body = JSON.stringify({ refreshToken, envSeen: process.env.AXIOM_REFRESH_TOKEN || '', at: Date.now() });
+  const body = JSON.stringify({ refreshToken, envSeen: process.env.AXIOM_REFRESH_TOKEN || '', at: Date.now(), cfClearance, br });
   for (const f of [AUTH_FILE, AUTH_FALLBACK]) {
     try { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, body); return; } catch (_) {}
   }
@@ -141,6 +164,8 @@ function loadAuth() {
     try {
       const j = JSON.parse(readFileSync(f, 'utf8'));
       const env = process.env.AXIOM_REFRESH_TOKEN || '';
+      if (j.br && j.br.ua) br = { ...br, ...j.br };
+      if (j.cfClearance && !process.env.CF_CLEARANCE) cfClearance = j.cfClearance;
       if (j.refreshToken && (!env || j.envSeen === env)) {
         refreshToken = j.refreshToken;
         console.log(`[${ts()}] 💾 Refresh token încărcat din ${f} (salvat acum ${Math.round((Date.now() - (j.at || 0)) / 60000)} min)`);
@@ -185,13 +210,7 @@ const MAX_AXIOM_TRIES = AXIOM_NODES.length;
 // care rotește găsește noul nod și-l memorează → următoarele merg direct pe el (fără apel irosit, fără update manual).
 const _stickyNode = {}; // key -> ultimul subdomeniu bun
 function axiomHeaders() {
-  return {
-    'cookie': buildCookie(),
-    'referer': 'https://axiom.trade/',
-    'origin': 'https://axiom.trade',
-    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-    'accept': 'application/json'
-  };
+  return browserHeaders({ 'cookie': buildCookie() });
 }
 // Întoarce un Response fetch OK, sau { ok:false, status, _allFailed, _last } dacă toate nodurile încercate au picat.
 async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
@@ -387,6 +406,21 @@ app.get('/rh/ax', async (req, res) => {
   } catch (e) { res.json({ error: e.message }); }
 });
 
+// 🔬 DIAGNOZĂ (protejată cu x-api-key): GET /ax-debug?node=3&path=/dev-tokens-v5?devAddress=...%26v=2[&method=POST&body={"v":2}][&bare=1]
+// → statusul + începutul răspunsului, cu sesiunea și profilul proxy-ului (bare=1 → fără headerele sec-*). Nu întoarce cookie-uri.
+app.get('/ax-debug', async (req, res) => {
+  if ((req.headers['x-api-key'] || '') !== (process.env.API_KEY || 'sniper2025')) return res.status(401).json({ error: 'unauthorized' });
+  const node = String(req.query.node || '10').replace(/[^0-9]/g, ''), path = String(req.query.path || '/');
+  const method = req.query.method === 'POST' ? 'POST' : 'GET';
+  const headers = req.query.bare ? { cookie: buildCookie(), origin: 'https://axiom.trade', referer: 'https://axiom.trade/', 'user-agent': br.ua } : axiomHeaders();
+  if (method === 'POST') headers['content-type'] = 'application/json';
+  try {
+    const r = await fetch(`https://api${node}.axiom.trade${path.startsWith('/') ? path : '/' + path}`, { method, headers, body: method === 'POST' ? (req.query.body || '{}') : undefined });
+    const body = (await r.text()).slice(0, 600);
+    res.json({ status: r.status, node, path, method, setCookie: (r.headers.getSetCookie?.() || []).map((c) => c.split('=')[0]), body });
+  } catch (e) { res.json({ error: e.message }); }
+});
+
 // ═══ Manual Cookie Update ═══
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
@@ -420,6 +454,8 @@ app.post('/update-cookie', express.json(), (req, res) => {
     console.log(`[${ts()}] 🔑 Refresh token updated`);
     res.json({ ok: true });
   } else if (req.body.cookie) {
+    // profilul browserului din care e cookie-ul (opțional, dar cf_clearance e legat de el): ua, chua (sec-ch-ua), platform, mobile
+    for (const k of ['ua', 'chua', 'platform', 'mobile']) if (req.body[k]) br[k] = String(req.body[k]);
     const rt = req.body.cookie.match(/auth-refresh-token=([^;]+)/);
     const at = req.body.cookie.match(/auth-access-token=([^;]+)/);
     const cf = req.body.cookie.match(/__cf_bm=([^;]+)/);
@@ -445,6 +481,7 @@ app.get('/', (req, res) => {
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
     hasCfClearance: cfClearance.length > 0,
+    browser: `${br.platform} ${br.mobile === '?1' ? 'mobil' : 'desktop'} · ${br.ua.slice(0, 60)}`,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
     needsRefresh: needsRefresh()
   });
