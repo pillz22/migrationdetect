@@ -138,8 +138,9 @@ function ts() {
 // la eșec doar reîmprospăta token-ul pe ACELAȘI nod → 425 rămânea. Acum rotim la alt api-N pe eșec tranzitoriu.
 // Plafonat la MAX_AXIOM_TRIES ca să NU bursteze Axiom (max N apeluri/cerere, doar pe eșec — cazul normal = 1 apel).
 // DOAR subdomeniile care REZOLVĂ DNS (api4/api5/api11 NU există → „fetch failed" degeaba). Verificat 2026-09-25.
-const AXIOM_NODES = [2, 3, 6, 7, 8, 9, 10];
-const MAX_AXIOM_TRIES = 4;
+const AXIOM_NODES = [10, 2, 3, 6, 7, 8, 9, 11, 4, 5];
+const MAX_AXIOM_TRIES = AXIOM_NODES.length;
+
 // 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
 // încearcă PRIMUL data viitoare → nu re-ghicește la fiecare cerere. Când Axiom mută ruta pe alt nod, prima cerere
 // care rotește găsește noul nod și-l memorează → următoarele merg direct pe el (fără apel irosit, fără update manual).
