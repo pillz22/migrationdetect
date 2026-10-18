@@ -4,10 +4,13 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 
 // ═══ Axiom Auth State ═══
-let refreshToken = process.env.AXIOM_REFRESH_TOKEN || '';
-let accessToken = '';
+// tokenurile pot veni din Variables cu sau fără prefixul „auth-…-token=" și cu „;…" după → păstrez doar valoarea
+const _envTok = (v, name) => String(v || '').trim().replace(new RegExp('^' + name + '='), '').split(';')[0].trim();
+let refreshToken = _envTok(process.env.AXIOM_REFRESH_TOKEN, 'auth-refresh-token');
+let accessToken = _envTok(process.env.AXIOM_ACCESS_TOKEN || process.env.AUTH_ACCESS_TOKEN || process.env.ACCESS_TOKEN, 'auth-access-token');
 let cfBm = '';
-let lastRefresh = 0;
+let lastRefresh = accessToken ? Date.now() : 0;   // token de acces din Variables → îl folosesc direct, fără refresh la pornire
+
 // RH (robinhood-api2) cere cf_clearance (IP-bound) → stocăm cookie-ul RH COMPLET,
 // exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
 let rhCookie = '';
@@ -400,9 +403,11 @@ app.listen(PORT, () => {
   console.log(`🚀 Axiom Fees Proxy running on port ${PORT}`);
   console.log(`🔑 Refresh token: ${refreshToken ? 'SET' : 'NOT SET'}`);
 
-  if (refreshToken) {
+  console.log(`🔑 Access token din Variables: ${accessToken ? 'SET' : 'NOT SET'}`);
+  if (refreshToken && !accessToken) {
     refreshAccessToken();
   }
+
   // 🔄 Refresh PROACTIV la 12 min (token-ul de acces expiră ~16 min), ca browserul → fiecare cerere pleacă cu token valid.
   // ~5 apeluri/oră; cooldown-ul de 60s din refreshAccessToken rămâne.
   setInterval(() => { if (refreshToken && Date.now() - lastRefresh > 12 * 60 * 1000) refreshAccessToken(); }, 60 * 1000);
