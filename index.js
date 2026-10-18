@@ -11,33 +11,6 @@ let lastRefresh = 0;
 // RH (robinhood-api2) cere cf_clearance (IP-bound) → stocăm cookie-ul RH COMPLET,
 // exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
 let rhCookie = '';
-let cfClearance = process.env.CF_CLEARANCE || '';
-// 🖥️ PROFILUL BROWSERULUI din care sunt cookie-urile (2026-10-18): cf_clearance e legat de User-Agent-ul browserului care l-a primit, iar
-// browserul trimite și sec-ch-ua / sec-fetch-*. Proxy-ul trimitea un UA de Windows scurtat și nimic altceva → Axiom răspundea
-// „404 RESOURCE NOT FOUND" la tot, deși tokenul era valid. Acum: UA + sec-ch-* trimise prin /update-cookie (sau env), salvate pe disc.
-let br = {
-  ua: process.env.AXIOM_UA || 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Safari/537.36',
-  chua: process.env.AXIOM_SEC_CH_UA || '"Chromium";v="141", "Not?A_Brand";v="24", "Google Chrome";v="141"',
-  platform: process.env.AXIOM_PLATFORM || '"Windows"',
-  mobile: process.env.AXIOM_MOBILE || '?0',
-};
-function browserHeaders(extra = {}) {
-  return {
-    'accept': 'application/json, text/plain, */*',
-    'accept-language': 'en-US,en;q=0.9',
-    'origin': 'https://axiom.trade',
-    'referer': 'https://axiom.trade/',
-    'priority': 'u=1, i',
-    'sec-ch-ua': br.chua,
-    'sec-ch-ua-mobile': br.mobile,
-    'sec-ch-ua-platform': br.platform,
-    'sec-fetch-dest': 'empty',
-    'sec-fetch-mode': 'cors',
-    'sec-fetch-site': 'same-site',
-    'user-agent': br.ua,
-    ...extra,
-  };
-}
 
 const REFRESH_INTERVAL = 14 * 60 * 1000;
 
@@ -63,10 +36,13 @@ async function refreshAccessToken() {
       // POST /refresh-access-token → răspunde „Access token refreshed!" + Set-Cookie auth-access-token.
       const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/refresh-access-token`, {
         method: 'POST',
-        headers: browserHeaders({
-          'content-type': 'application/json',
-          'cookie': `auth-refresh-token=${refreshToken}` + (cfBm ? `; __cf_bm=${cfBm}` : '') + (cfClearance ? `; cf_clearance=${cfClearance}` : ''),
-        }),
+        headers: {
+          'Content-Type': 'application/json',
+          'cookie': `auth-refresh-token=${refreshToken}`,
+          'referer': 'https://axiom.trade/',
+          'origin': 'https://axiom.trade',
+          'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+        },
         // 🔑 2026-10-16: Axiom folosește acum `v` ca VERSIUNE de API — browserul trimite corp {"v":2} la refresh și `&v=2` pe
         // dev-tokens-v5 / token-info-v2 / pair-info. Fără corp / cu v=<timestamp> → 404 „RESOURCE NOT FOUND" pe toate nodurile.
         body: JSON.stringify({ v: 2 })
@@ -84,7 +60,7 @@ async function refreshAccessToken() {
       }
       // 404 (ruta nu-i pe nod) sau 5xx (eroare de server) = problemă de NOD → rotește la altul care O ARE.
       if (res.status === 404 || (res.status >= 500 && res.status <= 599)) {
-        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status}${await _why(res)} → rotate (rută/nod)`);
+        console.log(`[${ts()}] ⚠️ auth api${_authNodes[ai]} ${res.status} → rotate (rută/nod)`);
         continue;
       }
 
@@ -120,14 +96,10 @@ async function refreshAccessToken() {
 
       if (newAccess) {
         accessToken = newAccess;
-        if (newRefresh) {
-          if (newRefresh !== refreshToken) console.log(`[${ts()}] 🔁 Axiom a dat un refresh token NOU → salvat pe disc`);
-          refreshToken = newRefresh;
-        }
+        if (newRefresh) refreshToken = newRefresh;
         if (newCfBm) cfBm = newCfBm;
         lastRefresh = Date.now();
         _authSticky = _authNodes[ai];                                  // memorează nodul auth care a mers
-        saveAuth();
         console.log(`[${ts()}] ✅ Access token refreshed${ai ? ` (via api${_authNodes[ai]})` : ''}`);
         return true;
       }
@@ -143,47 +115,10 @@ async function refreshAccessToken() {
   return false;
 }
 
-// ═══ 💾 Tokenul de refresh SALVAT PE DISC (2026-10-18) ═══
-// Axiom dă la fiecare refresh un auth-refresh-token NOU; proxy-ul îl ținea doar în memorie → la orice restart / redeploy Railway pornea
-// iar cu AXIOM_REFRESH_TOKEN din Variables (deja înlocuit) → refresh 404 pe toate nodurile → fără token de acces → 404 la tot.
-// Acum ultimul token bun se scrie în AUTH_FILE și se citește la pornire. Pe Railway adaugă un Volume montat în /data ca să
-// supraviețuiască și redeploy-urilor (fără volum supraviețuiește doar restarturilor). Dacă schimbi AXIOM_REFRESH_TOKEN în Variables,
-// valoarea nouă din Variables are prioritate (fișierul ține minte ce era în Variables când a fost scris).
-import { readFileSync, writeFileSync, mkdirSync } from 'fs';
-import { dirname } from 'path';
-const AUTH_FILE = process.env.AUTH_FILE || '/data/axiom-auth.json';
-const AUTH_FALLBACK = './axiom-auth.json';
-function saveAuth() {
-  const body = JSON.stringify({ refreshToken, envSeen: process.env.AXIOM_REFRESH_TOKEN || '', at: Date.now(), cfClearance, br });
-  for (const f of [AUTH_FILE, AUTH_FALLBACK]) {
-    try { mkdirSync(dirname(f), { recursive: true }); writeFileSync(f, body); return; } catch (_) {}
-  }
-}
-function loadAuth() {
-  for (const f of [AUTH_FILE, AUTH_FALLBACK]) {
-    try {
-      const j = JSON.parse(readFileSync(f, 'utf8'));
-      const env = process.env.AXIOM_REFRESH_TOKEN || '';
-      if (j.br && j.br.ua) br = { ...br, ...j.br };
-      if (j.cfClearance && !process.env.CF_CLEARANCE) cfClearance = j.cfClearance;
-      if (j.refreshToken && (!env || j.envSeen === env)) {
-        refreshToken = j.refreshToken;
-        console.log(`[${ts()}] 💾 Refresh token încărcat din ${f} (salvat acum ${Math.round((Date.now() - (j.at || 0)) / 60000)} min)`);
-      } else if (env) console.log(`[${ts()}] 💾 AXIOM_REFRESH_TOKEN din Variables e NOU → îl folosesc pe acela`);
-      return;
-    } catch (_) {}
-  }
-}
-// 404 „RESOURCE NOT FOUND" (cerere respinsă de aplicație: rută / versiune / token) vs „404" scurt (blocaj de IP la margine) — ca să nu mai ghicim
-async function _why(res) {
-  try { const t = (await res.text()).replace(/\s+/g, ' ').trim(); return t ? `(${t.slice(0, 40)})` : ''; } catch (_) { return ''; }
-}
-
 function buildCookie() {
   let cookie = `auth-refresh-token=${refreshToken}`;
   if (accessToken) cookie += `; auth-access-token=${accessToken}`;
   if (cfBm) cookie += `; __cf_bm=${cfBm}`;
-  if (cfClearance) cookie += `; cf_clearance=${cfClearance}`;   // ca browserul (cookie-ul e pe .axiom.trade → pleacă și spre apiN)
   return cookie;
 }
 
@@ -200,22 +135,27 @@ function ts() {
 // Axiom load-balancează pe api2..api11 — un nod dă uneori 425 „Too Early"/5xx (sau 404 dacă ruta nu-i pe nodul ăla)
 // în timp ce alt nod merge (observat: pair-info pe api2 pică, pe api3 merge). Codul vechi hardcoda UN subdomeniu și
 // la eșec doar reîmprospăta token-ul pe ACELAȘI nod → 425 rămânea. Acum rotim la alt api-N pe eșec tranzitoriu.
-// 2026-10-18: la 404 încearcă TOATE nodurile (browserul ia dev-tokens-v5 de pe api10, pe care vechiul plafon de 4 nu-l atingea).
-// api4/api5/api11 NU rezolvă DNS → scoase (dădeau doar „fetch failed").
-const AXIOM_NODES = [10, 2, 3, 6, 7, 8, 9];
+// Plafonat la MAX_AXIOM_TRIES ca să NU bursteze Axiom (max N apeluri/cerere, doar pe eșec — cazul normal = 1 apel).
+// DOAR subdomeniile care REZOLVĂ DNS (api4/api5/api11 NU există → „fetch failed" degeaba). Verificat 2026-09-25.
+// 2026-10-18: Axiom a mutat rutele pe alte noduri (browserul: dev-tokens-v5 pe api10) → cu doar 4 noduri încercate (api7,2,3,6) proxy-ul
+// nu ajungea niciodată la nodul bun → 404 pe tot. 404 = „ruta nu-i pe nodul ăsta" (ieftin) → la 404 încearcă TOATE nodurile; 425/429 = oprește imediat.
+const AXIOM_NODES = [10, 2, 3, 6, 7, 8, 9, 11, 4, 5];
 const MAX_AXIOM_TRIES = AXIOM_NODES.length;
-
 // 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
 // încearcă PRIMUL data viitoare → nu re-ghicește la fiecare cerere. Când Axiom mută ruta pe alt nod, prima cerere
 // care rotește găsește noul nod și-l memorează → următoarele merg direct pe el (fără apel irosit, fără update manual).
 const _stickyNode = {}; // key -> ultimul subdomeniu bun
 function axiomHeaders() {
-  return browserHeaders({ 'cookie': buildCookie() });
+  return {
+    'cookie': buildCookie(),
+    'referer': 'https://axiom.trade/',
+    'origin': 'https://axiom.trade',
+    'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+    'accept': 'application/json'
+  };
 }
 // Întoarce un Response fetch OK, sau { ok:false, status, _allFailed, _last } dacă toate nodurile încercate au picat.
 async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
-  // fără token de acces → încearcă întâi refresh-ul (fără el Axiom răspunde 404 pe toate nodurile)
-  if (!accessToken && refreshToken) await refreshAccessToken();
   const first = _stickyNode[key] || preferred;                        // pornește de la ultimul nod bun (sticky), altfel default
   const order = [first, ...AXIOM_NODES.filter(n => n !== first)].slice(0, MAX_AXIOM_TRIES);
   const _ok = (resp, n, rotated) => { if (_stickyNode[key] !== n) { console.log(`[${ts()}] 🎯 ${tag} → api${n} memorat${rotated ? ' (rotit de la api' + first + ')' : ''}`); _stickyNode[key] = n; } return resp; };
@@ -244,7 +184,7 @@ async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
         break;
       }
     }
-    tries.push(`api${n}:${st}${st === 404 ? await _why(response) : ''}`);
+    tries.push(`api${n}:${st}`);
     // ⛔ 425/429 „Too Early" = rate-limit pe CONT/IP (toate nodurile te throttle-uiesc DEODATĂ, nu-i nod prost).
     // Rotația ar trimite 4 apeluri/cerere → și mai mult rate-limit. IES imediat (fail-fast, 1 apel) → caller-ul reîncearcă mai târziu.
     if (st === 425 || st === 429) break;
@@ -337,17 +277,9 @@ app.get('/dev-tokens/:wallet', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════════════════
 const RH_AX = 'https://robinhood-api2.axiom.trade';
 function rhHeaders() {
-  let cookie = rhCookie || buildCookie();
-
-  // Adaugă CF_CLEARANCE doar dacă nu există deja în cookie.
-  const hasClearanceInCookie = /(?:^|;\s*)cf_clearance=/i.test(cookie);
-
-  if (cfClearance && !hasClearanceInCookie) {
-    cookie = `${cookie}; cf_clearance=${cfClearance}`;
-  }
-
+  // Trimite cookie-ul RH COMPLET (cu cf_clearance) dacă e setat; altfel fallback la buildCookie().
   return {
-    'cookie': cookie,
+    'cookie': rhCookie || buildCookie(),
     'referer': 'https://robinhood.axiom.trade/',
     'origin': 'https://robinhood.axiom.trade',
     'user-agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
@@ -406,21 +338,6 @@ app.get('/rh/ax', async (req, res) => {
   } catch (e) { res.json({ error: e.message }); }
 });
 
-// 🔬 DIAGNOZĂ (protejată cu x-api-key): GET /ax-debug?node=3&path=/dev-tokens-v5?devAddress=...%26v=2[&method=POST&body={"v":2}][&bare=1]
-// → statusul + începutul răspunsului, cu sesiunea și profilul proxy-ului (bare=1 → fără headerele sec-*). Nu întoarce cookie-uri.
-app.get('/ax-debug', async (req, res) => {
-  if ((req.headers['x-api-key'] || '') !== (process.env.API_KEY || 'sniper2025')) return res.status(401).json({ error: 'unauthorized' });
-  const node = String(req.query.node || '10').replace(/[^0-9]/g, ''), path = String(req.query.path || '/');
-  const method = req.query.method === 'POST' ? 'POST' : 'GET';
-  const headers = req.query.bare ? { cookie: buildCookie(), origin: 'https://axiom.trade', referer: 'https://axiom.trade/', 'user-agent': br.ua } : axiomHeaders();
-  if (method === 'POST') headers['content-type'] = 'application/json';
-  try {
-    const r = await fetch(`https://api${node}.axiom.trade${path.startsWith('/') ? path : '/' + path}`, { method, headers, body: method === 'POST' ? (req.query.body || '{}') : undefined });
-    const body = (await r.text()).slice(0, 600);
-    res.json({ status: r.status, node, path, method, setCookie: (r.headers.getSetCookie?.() || []).map((c) => c.split('=')[0]), body });
-  } catch (e) { res.json({ error: e.message }); }
-});
-
 // ═══ Manual Cookie Update ═══
 app.post('/update-cookie', express.json(), (req, res) => {
   const key = req.headers['x-api-key'] || '';
@@ -443,28 +360,21 @@ app.post('/update-cookie', express.json(), (req, res) => {
     if (rt) refreshToken = rt[1];
     if (at) { accessToken = at[1]; lastRefresh = Date.now(); }
     if (cf) cfBm = cf[1];
-    saveAuth();
     console.log(`[${ts()}] 🔑 RH cookie updated (len ${rhCookie.length})`);
     res.json({ ok: true, rhCookie: rhCookie.length });
   } else if (req.body.refreshToken) {
     refreshToken = req.body.refreshToken;
     accessToken = '';
     lastRefresh = 0;
-    saveAuth();
     console.log(`[${ts()}] 🔑 Refresh token updated`);
     res.json({ ok: true });
   } else if (req.body.cookie) {
-    // profilul browserului din care e cookie-ul (opțional, dar cf_clearance e legat de el): ua, chua (sec-ch-ua), platform, mobile
-    for (const k of ['ua', 'chua', 'platform', 'mobile']) if (req.body[k]) br[k] = String(req.body[k]);
     const rt = req.body.cookie.match(/auth-refresh-token=([^;]+)/);
     const at = req.body.cookie.match(/auth-access-token=([^;]+)/);
     const cf = req.body.cookie.match(/__cf_bm=([^;]+)/);
-    const cc = req.body.cookie.match(/cf_clearance=([^;]+)/);
     if (rt) refreshToken = rt[1];
     if (at) { accessToken = at[1]; lastRefresh = Date.now(); }
     if (cf) cfBm = cf[1];
-    if (cc) cfClearance = cc[1];
-    saveAuth();
     console.log(`[${ts()}] 🔑 Cookie updated`);
     res.json({ ok: true });
   } else {
@@ -480,8 +390,7 @@ app.get('/', (req, res) => {
     endpoints: ['/fees/:pool', '/pair-info/:pair', '/dev-tokens/:wallet', '/rh/dev-tokens/:dev', '/rh/ax?path='],
     hasRefreshToken: refreshToken.length > 0,
     hasAccessToken: accessToken.length > 0,
-    hasCfClearance: cfClearance.length > 0,
-    browser: `${br.platform} ${br.mobile === '?1' ? 'mobil' : 'desktop'} · ${br.ua.slice(0, 60)}`,
+    hasRhCookie: rhCookie.length > 0,
     lastRefresh: lastRefresh > 0 ? `${Math.floor((Date.now() - lastRefresh) / 1000)}s ago` : 'never',
     needsRefresh: needsRefresh()
   });
@@ -489,7 +398,6 @@ app.get('/', (req, res) => {
 
 app.listen(PORT, () => {
   console.log(`🚀 Axiom Fees Proxy running on port ${PORT}`);
-  loadAuth();
   console.log(`🔑 Refresh token: ${refreshToken ? 'SET' : 'NOT SET'}`);
 
   if (refreshToken) {
