@@ -10,7 +10,6 @@ let refreshToken = _envTok(process.env.AXIOM_REFRESH_TOKEN, 'auth-refresh-token'
 let accessToken = _envTok(process.env.AXIOM_ACCESS_TOKEN || process.env.AUTH_ACCESS_TOKEN || process.env.ACCESS_TOKEN, 'auth-access-token');
 let cfBm = '';
 let lastRefresh = accessToken ? Date.now() : 0;   // token de acces din Variables → îl folosesc direct, fără refresh la pornire
-
 // RH (robinhood-api2) cere cf_clearance (IP-bound) → stocăm cookie-ul RH COMPLET,
 // exact cum îl trimite browserul, și-l trimitem verbatim. Hot-swap via /update-cookie {rhCookie}.
 let rhCookie = '';
@@ -142,7 +141,7 @@ function ts() {
 // DOAR subdomeniile care REZOLVĂ DNS (api4/api5/api11 NU există → „fetch failed" degeaba). Verificat 2026-09-25.
 // 2026-10-18: Axiom a mutat rutele pe alte noduri (browserul: dev-tokens-v5 pe api10) → cu doar 4 noduri încercate (api7,2,3,6) proxy-ul
 // nu ajungea niciodată la nodul bun → 404 pe tot. 404 = „ruta nu-i pe nodul ăsta" (ieftin) → la 404 încearcă TOATE nodurile; 425/429 = oprește imediat.
-const AXIOM_NODES = [10, 2, 3, 6, 7, 8, 9, 11, 4, 5];
+const AXIOM_NODES = [10, 2, 3, 6, 7, 8, 9];
 const MAX_AXIOM_TRIES = AXIOM_NODES.length;
 // 🎯 STICKY (Opțiunea A — self-learning): reține ultimul subdomeniu care A MERS pt fiecare endpoint (`key`) și-l
 // încearcă PRIMUL data viitoare → nu re-ghicește la fiecare cerere. Când Axiom mută ruta pe alt nod, prima cerere
@@ -193,6 +192,14 @@ async function axiomFetch(pathAndQuery, { preferred, tag, key }) {
     if (st === 425 || st === 429) break;
     if (st === 404 || (st >= 500 && st <= 599)) continue;              // rută mutată / eroare server = problemă de NOD → rotește
     return response;                                                   // alt cod (ex 400) → întoarce cum e
+  }
+  // 404 pe TOATE nodurile = cel mai probabil tokenul de acces a fost ANULAT (Axiom răspunde „RESOURCE NOT FOUND" la cereri neautentificate,
+  // nu 401) — ex. browserul cu aceeași sesiune a luat un token nou → un refresh + o reîncercare pe nodul preferat (2026-10-18)
+  if (!refreshedOnce && refreshToken && tries.length && tries.every((t) => /:404\b/.test(t))) {
+    accessToken = '';                                                  // tokenul curent nu mai e bun
+    if (await refreshAccessToken()) {
+      try { const r2 = await fetch(`https://api${first}.axiom.trade${pathAndQuery}`, { headers: axiomHeaders() }); if (r2.ok) return _ok(r2, first, false); tries.push(`api${first}:${r2.status}(după refresh)`); } catch (e) { tries.push(`api${first}:${e.message}`); }
+    }
   }
   return { ok: false, status: 425, _allFailed: true, _last: tries.join(',') };
 }
@@ -402,12 +409,11 @@ app.get('/', (req, res) => {
 app.listen(PORT, () => {
   console.log(`🚀 Axiom Fees Proxy running on port ${PORT}`);
   console.log(`🔑 Refresh token: ${refreshToken ? 'SET' : 'NOT SET'}`);
-
   console.log(`🔑 Access token din Variables: ${accessToken ? 'SET' : 'NOT SET'}`);
+
   if (refreshToken && !accessToken) {
     refreshAccessToken();
   }
-
   // 🔄 Refresh PROACTIV la 12 min (token-ul de acces expiră ~16 min), ca browserul → fiecare cerere pleacă cu token valid.
   // ~5 apeluri/oră; cooldown-ul de 60s din refreshAccessToken rămâne.
   setInterval(() => { if (refreshToken && Date.now() - lastRefresh > 12 * 60 * 1000) refreshAccessToken(); }, 60 * 1000);
