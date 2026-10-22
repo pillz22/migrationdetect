@@ -36,7 +36,8 @@ async function refreshAccessToken() {
       // ⚠️ Ruta s-a MUTAT: `/auth/refresh` nu mai există (404 pe toate nodurile) → proxy-ul n-avea NICIODATĂ token de acces
       // (`/` arăta hasAccessToken:false, lastRefresh:never) și trimitea doar refresh-token-ul. Browserul folosește
       // POST /refresh-access-token → răspunde „Access token refreshed!" + Set-Cookie auth-access-token.
-      const res = await fetch(`https://api${_authNodes[ai]}.axiom.trade/refresh-access-token`, {
+      const res = await fetch(`https://api.axiom.trade/refresh-access-token`, {
+
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
